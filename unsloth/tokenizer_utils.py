@@ -491,14 +491,17 @@ def _load_correct_tokenizer(
         # )
     pass
 
-    fast_tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name,
-        model_max_length  = model_max_length,
-        padding_side      = padding_side,
-        token             = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir         = cache_dir,
-    )
+    try:
+        fast_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name,
+            model_max_length  = model_max_length,
+            padding_side      = padding_side,
+            token             = token,
+            trust_remote_code = trust_remote_code,
+            cache_dir         = cache_dir,
+        )
+    except:
+        fast_tokenizer = None
 
     if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
         return fast_tokenizer

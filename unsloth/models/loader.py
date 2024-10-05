@@ -309,9 +309,14 @@ class FastLanguageModel(FastLlamaModel):
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
-            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
+            (
+                os.path.exists(os.path.join(old_model_name, "tokenizer.json")) or \
+                (
+                    os.path.exists(os.path.join(old_model_name, "merges.txt" and \
+                    os.path.exists(os.path.join(old_model_name, "vocab.json")) and \
+                )
+            )
             os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
-
             tokenizer_name = old_model_name
         else:
             tokenizer_name = None

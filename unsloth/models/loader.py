@@ -23,7 +23,7 @@ from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 import os
 from huggingface_hub.utils._token import get_token
-from huggingface_hub import HfFileSystem
+from huggingface_hub import HfFileSystem, file_exists
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
@@ -312,13 +312,23 @@ class FastLanguageModel(FastLlamaModel):
             (
                 os.path.exists(os.path.join(old_model_name, "tokenizer.json")) or \
                 (
-                    os.path.exists(os.path.join(old_model_name, "merges.txt" and \
+                    os.path.exists(os.path.join(old_model_name, "merges.txt")) and \
                     os.path.exists(os.path.join(old_model_name, "vocab.json")) and \
                 )
             )
             os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
             tokenizer_name = old_model_name
-        else:
+        elif  file_exists(old_model_name, "tokenizer_config.json", token = token) and \
+            (
+                file_exists(old_model_name, "tokenizer.json", token = token) or \
+                (
+                    file_exists(old_model_name, "merges.txt", token = token) and \
+                    file_exists(old_model_name, "vocab.json", token = token) and \
+                )
+            )
+            file_exists(old_model_name, "special_tokens_map.json", token = token):
+            tokenizer_name = old_model_name
+        else:   
             tokenizer_name = None
         pass
 

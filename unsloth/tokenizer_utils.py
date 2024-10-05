@@ -515,7 +515,7 @@ def _load_correct_tokenizer(
             fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
         
         # Confirm if slow and fast are equivalent!
-        if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
+        if fast_tokenizer is not None and assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             return fast_tokenizer
         else:
             logger.warning(f"Unsloth: Will load {tokenizer_name} as a legacy tokenizer.")

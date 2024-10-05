@@ -315,8 +315,9 @@ class FastLanguageModel(FastLlamaModel):
                     os.path.exists(os.path.join(old_model_name, "merges.txt")) and \
                     os.path.exists(os.path.join(old_model_name, "vocab.json"))
                 )
-            )
+            ) and \
             os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
+                
             tokenizer_name = old_model_name
         elif  file_exists(old_model_name, "tokenizer_config.json", token = token) and \
             (
@@ -325,8 +326,9 @@ class FastLanguageModel(FastLlamaModel):
                     file_exists(old_model_name, "merges.txt", token = token) and \
                     file_exists(old_model_name, "vocab.json", token = token)
                 )
-            )
+            ) and \
             file_exists(old_model_name, "special_tokens_map.json", token = token):
+                
             tokenizer_name = old_model_name
         else:   
             tokenizer_name = None

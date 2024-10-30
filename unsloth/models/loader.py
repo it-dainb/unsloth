@@ -22,13 +22,8 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 import os
-try:
-    from huggingface_hub.utils import get_token
-except:
-    # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
-pass
-from huggingface_hub import HfFileSystem
+from huggingface_hub.utils._token import get_token
+from huggingface_hub import HfFileSystem, file_exists
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
@@ -202,19 +197,12 @@ class FastLanguageModel(FastLlamaModel):
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
         
-        # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
-            # Check if folder exists locally
-            if os.path.isdir(model_name):
-                exist_adapter_config = os.path.exists(os.path.join(model_name, "adapter_config.json"))
-                exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
-                both_exist = exist_adapter_config and exist_config
-            else:
-                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
-                files = (os.path.split(x)[-1] for x in files)
-                if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
-                    both_exist = True
-                pass
+            # New transformers need to check manually.
+            files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+            files = (os.path.split(x)[-1] for x in files)
+            if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
+                both_exist = True
             pass
         pass
 
@@ -321,11 +309,28 @@ class FastLanguageModel(FastLlamaModel):
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
-            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
+            (
+                os.path.exists(os.path.join(old_model_name, "tokenizer.json")) or \
+                (
+                    os.path.exists(os.path.join(old_model_name, "merges.txt")) and \
+                    os.path.exists(os.path.join(old_model_name, "vocab.json"))
+                )
+            ) and \
             os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
-
+                
             tokenizer_name = old_model_name
-        else:
+        elif  file_exists(old_model_name, "tokenizer_config.json", token = token) and \
+            (
+                file_exists(old_model_name, "tokenizer.json", token = token) or \
+                (
+                    file_exists(old_model_name, "merges.txt", token = token) and \
+                    file_exists(old_model_name, "vocab.json", token = token)
+                )
+            ) and \
+            file_exists(old_model_name, "special_tokens_map.json", token = token):
+                
+            tokenizer_name = old_model_name
+        else:   
             tokenizer_name = None
         pass
 

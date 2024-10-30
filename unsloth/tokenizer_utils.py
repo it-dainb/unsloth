@@ -25,6 +25,14 @@ import collections
 import numpy as np
 import gc
 import subprocess
+from unsloth_zoo.tokenizer_utils import (
+    mean_of_trained_tokens,
+    add_new_tokens,
+    fix_untrained_tokens,
+)
+from unsloth_zoo.training_utils import (
+    fix_zero_training_loss,
+)
 
 __all__ = [
     "load_correct_tokenizer",
@@ -996,161 +1004,6 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     return
 pass
 
-
-@torch.inference_mode
-def mean_of_trained_tokens(model, eps = 1e-16):
-    """
-    Llama-3 for eg has untrained vectors in the base model.
-    These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
-    We reset them to the mean of the rest of the tokens
-    """
-    embedding_matrix = model.get_input_embeddings ().weight.clone()
-    lm_head_matrix   = model.get_output_embeddings().weight.clone()
-
-    # Get untrained tokens
-    indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
-    where_untrained = torch.where(indicator_untrained)[0]
-    n_untrained = where_untrained.shape[0]
-    n_trained = embedding_matrix.shape[0] - n_untrained
-    # if n_untrained != 0:
-    #     print(
-    #         f"Unsloth: Not an error, but your model has {n_untrained} untrained tokens.\n"\
-    #         "We shall set them to the mean of the other trained tokens."
-    #     )
-    # pass
-
-    # Get sum of all items
-    sum_embedding = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
-    sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
-
-    # Remove bad tokens
-    sum_embedding -= torch.sum(embedding_matrix[where_untrained], dtype = torch.float32, axis = 0)
-    sum_lm_head   -= torch.sum(lm_head_matrix  [where_untrained], dtype = torch.float32, axis = 0)
-
-    # Find correct average by dividing by sum of trained tokens
-    mean_embedding = (sum_embedding / n_trained)
-    mean_lm_head   = (sum_lm_head   / n_trained)
-
-    return mean_embedding, mean_lm_head
-pass
-
-
-@torch.inference_mode
-def add_new_tokens(
-    model,
-    tokenizer,
-    new_tokens = [],
-    method = "mean",
-    interpolation = 0.5,
-):
-    """
-    Smartly resizes the tokenizer and adds new tokens to the model.
-    We also disregard untrained tokens by removing them from the mean calculation.
-    """
-    assert(isinstance(new_tokens, (list, tuple)))
-    assert(len(new_tokens) > 0)
-    assert(method == "mean" or method == "interpolation")
-    assert(interpolation >= 0 and interpolation <= 1)
-
-    # Check if tokens already exist
-    overlapping_tokens = set(new_tokens) & set(tokenizer.vocab.keys())
-    if len(overlapping_tokens) != 0:
-        print(
-            f"Unsloth: You're adding new_tokens = {new_tokens}\n"\
-            f"There are tokens which are overlapping = {list(overlapping_tokens)}\n"\
-            f"We shall safely ignore these overlapping tokens."
-        )
-        new_tokens = [x for x in new_tokens if x not in overlapping_tokens]
-    pass
-
-    # Get mean of trained tokens
-    # mean_embedding, mean_lm_head = fix_untrained_tokens(model)
-
-    # Weirdly be careful reserved tokens can pop out
-    mean_embedding, mean_lm_head = mean_of_trained_tokens(model)
-    mean_embedding = mean_embedding.to(torch.float32)
-    mean_lm_head   = mean_lm_head  .to(torch.float32)
-
-    # Add tokens!
-    old_length = len(tokenizer)
-    tokenizer.add_tokens(new_tokens)
-    model.resize_token_embeddings(len(tokenizer))
-
-    # If we use interpolation, we interpolate between the mean embeddings and
-    # the Word2Vec sum of the other vectors
-    embedding_matrix = model.get_input_embeddings ().weight
-    lm_head_matrix   = model.get_output_embeddings().weight
-
-    if method == "interpolation":
-        print(
-            "Unsloth: You are using interpolation to add new tokens.\n"\
-            f"We shall set new tokens = mean(embeddings)*{1-interpolation} + mean(new_tokens)*{interpolation}"
-        )
-        for j, token in enumerate(new_tokens):
-            input_ids = tokenizer(token, add_special_tokens = False).input_ids
-            mean_embedding_token = embedding_matrix[input_ids].mean(axis = 0, dtype = torch.float32)
-            mean_lm_head_token   = lm_head_matrix  [input_ids].mean(axis = 0, dtype = torch.float32)
-
-            # Interpolate
-            mean_embedding_token = mean_embedding*(1-interpolation) + mean_embedding_token*interpolation
-            mean_lm_head_token   = mean_lm_head  *(1-interpolation) + mean_lm_head_token  *interpolation
-
-            # Set the new vector
-            embedding_matrix[old_length+j] = mean_embedding_token
-            lm_head_matrix  [old_length+j] = mean_lm_head_token
-        pass
-    else:
-        # Now set the new tokens to the mean!
-        embedding_matrix[old_length:] = mean_embedding
-        lm_head_matrix  [old_length:] = mean_lm_head
-    pass
-
-    # We set a flag to say we need to train embeddings
-    internal_model = model
-    while hasattr(internal_model, "model"):
-        internal_model._need_to_train_embeddings = True
-        internal_model = internal_model.model
-    pass
-    internal_model._need_to_train_embeddings = True
-    
-    return
-pass
-
-
-@torch.inference_mode
-def fix_zero_training_loss(model, tokenizer, train_dataset):
-    """
-    Sometimes the labels get masked by all -100s, causing the loss
-    to be 0. We check for this!
-    """
-    if len(train_dataset) == 0: return
-
-    row = train_dataset[0]
-    if type(row) is dict and "labels" in row:
-
-        # Check the first 100 rows
-        seen_bad  = 0
-        seen_good = 0
-        for i, row in enumerate(train_dataset):
-            try:    check_tokens = list(set(row["labels"]))
-            except: continue
-            if len(check_tokens) == 1 and check_tokens[0] == -100: seen_bad += 1
-            else: seen_good += 1
-            if i >= 100: break
-        pass
-
-        # Check ratio
-        if seen_bad / (seen_bad + seen_good) >= 0.9:
-            logger.warning(
-                "Unsloth: Most labels in your dataset are -100. Training losses will be 0.\n"\
-                "For example, are you sure you used `train_on_responses_only` correctly?\n"\
-                "Or did you mask our tokens incorrectly? Maybe this is intended?"
-            )
-        pass
-    pass
-pass
-
-
 def check_nvidia():
     # Unsloth doesn't work yet on AMD devices - we're working on it!
     output = np.array([0,])
@@ -1165,7 +1018,7 @@ def check_nvidia():
 pass
 PRE_CHECK = check_nvidia()
 
-
+import inspect
 from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
@@ -1203,6 +1056,32 @@ except:
     pass
 pass
 
+def patch_trl_tokenizer_processing_class(trainer_name):
+    # New TRL removes tokenizer!
+    # We return it back!
+    exec(f"from trl import {trainer_name}", globals())
+    if str(eval(f"{trainer_name}").__name__).startswith("Unsloth"): return None
+    parameters = eval(f"inspect.signature({trainer_name}).parameters")
+    if "tokenizer" in parameters: return None
+    args = {
+        key : \
+            value.default \
+            if type(value.default) is not str else \
+            f"'{value.default}'" \
+        for key, value in parameters.items()
+    }
+    args["tokenizer"] = None
+    new_args = args.copy()
+    del new_args["tokenizer"]
+    del new_args["processing_class"]
+    new_args = ",\n".join(f"{' '*12}{key} = {key}" for key in new_args) + \
+        f",\n{' '*12}processing_class = tokenizer if tokenizer else processing_class"
+    args = ",\n".join(f"{' '*8}{key} = {value}" for key, value in args.items())
+    args = f"def __init__(\n" + f"{' '*8}self,\n" + args + "):"
+    args += f"\n{' '*8}\n{' '*8}super().__init__(\n{new_args}\n{' '*8})"
+    new_class = f"""class Unsloth{trainer_name}({trainer_name}):\n{' '*4}{args}\n"""
+    return new_class
+pass
 
 def patch_sft_trainer_tokenizer():
     """
@@ -1219,7 +1098,10 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])[0]\n"\
+        "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
+        "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
+        "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
@@ -1277,7 +1159,23 @@ def patch_sft_trainer_tokenizer():
         "    self.model.get_input_embeddings().neftune_noise_alpha = self.neftune_noise_alpha\n"\
         "    self.neftune_hook_handle = self.model.get_input_embeddings().register_forward_hook(neftune_post_forward_hook)\n"\
         "pass\n"\
-        "\n"
+        "tokenizer = self.processing_class if hasattr(self, 'processing_class') else self.tokenizer\n"\
+        "fix_untrained_tokens(self.model, tokenizer, self.train_dataset, IGNORED_TOKENIZER_NAMES, eps = 1e-16)\n\n"\
+        "fix_zero_training_loss(self.model, tokenizer, self.train_dataset)\n\n"
+        # Warn on gradient accumulation steps if it's used
+        check_text += \
+        "\n"\
+        "try:\n"\
+        "    gradient_accumulation_steps = self.args.gradient_accumulation_steps\n"\
+        "    if type(gradient_accumulation_steps) is int and gradient_accumulation_steps > 1:\n"\
+        "        from transformers import __version__ as transformers_version\n"\
+        "        from packaging.version import Version\n"\
+        "        if Version(transformers_version) <= Version('4.45.2'):\n"\
+        "            print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\\\n"\
+        "                  '`pip install --upgrade --no-cache-dir --no-deps unsloth transformers git+https://github.com/huggingface/trl.git`')\n"\
+        "except:\n"\
+        "    pass\n"\
+        "\n\n"
 
         # Also DPO weirdly tokenizes non numeric columns? Delete them!
         check_text += \
@@ -1300,5 +1198,17 @@ def patch_sft_trainer_tokenizer():
         exec(f"trl.trainer.{path_to_trainer}.{function_name} = {function_name}", globals())
     pass
 pass
+
+# Fix TRL trainers with removed tokenizer args (got replaced with processing_class)
+for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
+    trainer_text = patch_trl_tokenizer_processing_class(trainer_name)
+    if trainer_text is None: continue
+    try:
+        exec(trainer_text, globals())
+    except:
+        raise RuntimeError(f"Unsloth: Please file a bug report! Error patching {trainer_name}")
+    exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
+pass
+# FInally patch TRL tokenizer things
 
 patch_sft_trainer_tokenizer()

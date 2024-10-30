@@ -22,7 +22,11 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 import os
-from huggingface_hub.utils._token import get_token
+try:
+    from huggingface_hub.utils import get_token
+except:
+    # Old HF Hub versions <= 0.0.25
+    from huggingface_hub.utils._token import get_token
 from huggingface_hub import HfFileSystem, file_exists
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
@@ -198,12 +202,17 @@ class FastLanguageModel(FastLlamaModel):
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
         
         if SUPPORTS_LLAMA32:
-            # New transformers need to check manually.
-            files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
-            files = (os.path.split(x)[-1] for x in files)
-            if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
-                both_exist = True
-            pass
+            # Check if folder exists locally
+            if os.path.isdir(model_name):
+                exist_adapter_config = os.path.exists(os.path.join(model_name, "adapter_config.json"))
+                exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
+                both_exist = exist_adapter_config and exist_config
+            else:
+                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+                files = (os.path.split(x)[-1] for x in files)
+                if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
+                    both_exist = True
+                pass
         pass
 
         # Error out if both LoRA and normal model config exists.

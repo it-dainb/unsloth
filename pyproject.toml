@@ -244,7 +244,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo",
+    "unsloth_zoo=2024.11.0",
     "packaging",
     "tyro",
     "transformers>=4.44.2",
